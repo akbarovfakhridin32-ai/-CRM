@@ -1,301 +1,174 @@
+// ============================================================
+// СтройCRM — сервер (окончательная версия)
+// Отдаёт сайт (index.html) и безопасно общается с GigaChat
+// ============================================================
+
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
+const https = require('https');
 
 const app = express();
-
-// ✅ ВАЖНО: правильный порт для хостинга
 const PORT = process.env.PORT || 3000;
 
-// middleware
-app.use(express.json());
-app.use(express.static(__dirname));
+app.use(express.json({ limit: '2mb' }));
 
-// ============================
-// БАЗА ДАННЫХ В ФАЙЛЕ
-// ============================
+// Отдаём файлы сайта из папки public
+app.use(express.static(path.join(__dirname, 'public')));
 
-const DB_FILE = './db.json';
+// GigaChat использует сертификат Минцифры — отключаем строгую
+// проверку сертификата, чтобы не требовался VPN или доп. настройка.
+const insecureAgent = new https.Agent({ rejectUnauthorized: false });
 
-// создаём базу если её нет
-if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({
-        users: [
-            { id: 1, login: 'RUK-0001', password: '1234', full_name: 'Руководитель', role: 'owner' }
-        ],
-        projects: [],
-        tasks: [],
-        project_members: [],
-        reports: [],
-        messages: []
-    }, null, 2));
+let cachedToken = null;
+let tokenExpiresAt = 0;
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
-function readDB() {
-    return JSON.parse(fs.readFileSync(DB_FILE));
-}
-
-function writeDB(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
-
-// ============================
-// LOGIN
-// ============================
-
-app.post('/login', (req, res) => {
-    const { login, password } = req.body;
-    const db = readDB();
-
-    const user = db.users.find(u => u.login === login && u.password === password);
-
-    if (!user) {
-        return res.status(401).json({
-            success: false,
-            error: 'Неверный логин или пароль'
-        });
+function getAccessToken() {
+  return new Promise((resolve, reject) => {
+    const now = Date.now();
+    if (cachedToken && now < tokenExpiresAt - 30000) {
+      return resolve(cachedToken);
     }
 
-    res.json({
-        success: true,
-        user: {
-            id: user.id,
-            login: user.login,
-            name: user.full_name,
-            role: user.role
+    const authKey = process.env.GIGACHAT_AUTH_KEY;
+    if (!authKey) {
+      return reject(new Error('Переменная GIGACHAT_AUTH_KEY не задана на сервере'));
+    }
+
+    const body = 'scope=GIGACHAT_API_PERS';
+    const options = {
+      hostname: 'ngw.devices.sberbank.ru',
+      port: 9443,
+      path: '/api/v2/oauth',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
+        'RqUID': generateUUID(),
+        'Authorization': `Basic ${authKey}`,
+        'Content-Length': Buffer.byteLength(body)
+      },
+      agent: insecureAgent,
+      timeout: 15000
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (!json.access_token) {
+            return reject(new Error('GigaChat не вернул токен: ' + data));
+          }
+          cachedToken = json.access_token;
+          tokenExpiresAt = json.expires_at ? json.expires_at * 1000 : now + 25 * 60 * 1000;
+          resolve(cachedToken);
+        } catch (e) {
+          reject(new Error('Не удалось разобрать ответ токена: ' + data));
         }
+      });
     });
-});
 
-// ============================
-// PROJECTS
-// ============================
+    req.on('timeout', () => { req.destroy(); reject(new Error('Таймаут запроса токена GigaChat')); });
+    req.on('error', (e) => reject(new Error('Ошибка сети при запросе токена: ' + e.message)));
+    req.write(body);
+    req.end();
+  });
+}
 
-app.get('/api/projects', (req, res) => {
-    res.json(readDB().projects);
-});
+function askGigaChat(token, messages) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model: 'GigaChat',
+      messages,
+      temperature: 0.7,
+      max_tokens: 1000
+    });
 
-app.post('/api/projects', (req, res) => {
-    const db = readDB();
-
-    const newProject = {
-        id: Date.now(),
-        ...req.body,
-        created_at: new Date().toISOString()
+    const options = {
+      hostname: 'gigachat.devices.sberbank.ru',
+      port: 443,
+      path: '/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        'Content-Length': Buffer.byteLength(body)
+      },
+      agent: insecureAgent,
+      timeout: 30000
     };
 
-    db.projects.push(newProject);
-    writeDB(db);
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(new Error('Не удалось разобрать ответ GigaChat: ' + data));
+        }
+      });
+    });
 
-    res.json(newProject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Таймаут запроса к GigaChat')); });
+    req.on('error', (e) => reject(new Error('Ошибка сети при запросе к GigaChat: ' + e.message)));
+    req.write(body);
+    req.end();
+  });
+}
+
+// Маршрут для кнопки "Спросить ИИ-помощника"
+app.post('/api/ai-assistant', async (req, res) => {
+  try {
+    const { system, messages } = req.body || {};
+
+    const gigaMessages = [
+      { role: 'system', content: system || '' },
+      ...((messages || []).map((m) => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: m.content
+      })))
+    ];
+
+    const token = await getAccessToken();
+    const gigaData = await askGigaChat(token, gigaMessages);
+
+    const answer =
+      gigaData.choices?.[0]?.message?.content ||
+      (gigaData.error && (gigaData.error.message || JSON.stringify(gigaData.error))) ||
+      'GigaChat не дал ответа. Попробуйте ещё раз.';
+
+    res.json({ answer });
+  } catch (err) {
+    console.error('Ошибка ИИ-помощника:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.put('/api/projects/:id', (req, res) => {
-    const db = readDB();
-
-    const index = db.projects.findIndex(p => p.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-
-    db.projects[index] = { ...db.projects[index], ...req.body };
-    writeDB(db);
-
-    res.json(db.projects[index]);
+// Проверочный маршрут — если открыть /api/health в браузере,
+// сразу видно жив ли сервер и настроен ли ключ.
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    hasKey: Boolean(process.env.GIGACHAT_AUTH_KEY)
+  });
 });
 
-app.delete('/api/projects/:id', (req, res) => {
-    const db = readDB();
-
-    db.projects = db.projects.filter(p => p.id != req.params.id);
-    writeDB(db);
-
-    res.json({ success: true });
-});
-
-// ============================
-// USERS
-// ============================
-
-app.get('/api/users', (req, res) => {
-    res.json(readDB().users);
-});
-
-app.post('/api/users', (req, res) => {
-    const db = readDB();
-
-    const newUser = {
-        id: Date.now(),
-        ...req.body
-    };
-
-    db.users.push(newUser);
-    writeDB(db);
-
-    res.json(newUser);
-});
-
-app.put('/api/users/:id', (req, res) => {
-    const db = readDB();
-
-    const index = db.users.findIndex(u => u.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-
-    db.users[index] = { ...db.users[index], ...req.body };
-    writeDB(db);
-
-    res.json(db.users[index]);
-});
-
-app.delete('/api/users/:id', (req, res) => {
-    const db = readDB();
-
-    db.users = db.users.filter(u => u.id != req.params.id);
-    writeDB(db);
-
-    res.json({ success: true });
-});
-
-// ============================
-// TASKS
-// ============================
-
-app.get('/api/tasks', (req, res) => {
-    res.json(readDB().tasks);
-});
-
-app.post('/api/tasks', (req, res) => {
-    const db = readDB();
-
-    const newTask = {
-        id: Date.now(),
-        ...req.body
-    };
-
-    db.tasks.push(newTask);
-    writeDB(db);
-
-    res.json(newTask);
-});
-
-app.put('/api/tasks/:id', (req, res) => {
-    const db = readDB();
-
-    const index = db.tasks.findIndex(t => t.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-
-    db.tasks[index] = { ...db.tasks[index], ...req.body };
-    writeDB(db);
-
-    res.json(db.tasks[index]);
-});
-
-app.delete('/api/tasks/:id', (req, res) => {
-    const db = readDB();
-
-    db.tasks = db.tasks.filter(t => t.id != req.params.id);
-    writeDB(db);
-
-    res.json({ success: true });
-});
-
-// ============================
-// REPORTS
-// ============================
-
-app.get('/api/reports', (req, res) => {
-    res.json(readDB().reports);
-});
-
-app.post('/api/reports', (req, res) => {
-    const db = readDB();
-
-    const newReport = {
-        id: Date.now(),
-        ...req.body,
-        created_at: new Date().toISOString()
-    };
-
-    db.reports.push(newReport);
-    writeDB(db);
-
-    res.json(newReport);
-});
-
-app.delete('/api/reports/:id', (req, res) => {
-    const db = readDB();
-
-    db.reports = db.reports.filter(r => r.id != req.params.id);
-    writeDB(db);
-
-    res.json({ success: true });
-});
-
-// ============================
-// MESSAGES
-// ============================
-
-app.get('/api/messages', (req, res) => {
-    res.json(readDB().messages);
-});
-
-app.post('/api/messages', (req, res) => {
-    const db = readDB();
-
-    const newMessage = {
-        id: Date.now(),
-        ...req.body,
-        created_at: new Date().toISOString()
-    };
-
-    db.messages.push(newMessage);
-    writeDB(db);
-
-    res.json(newMessage);
-});
-
-// ============================
-// PROJECT MEMBERS
-// ============================
-
-app.get('/api/project_members', (req, res) => {
-    res.json(readDB().project_members);
-});
-
-app.post('/api/project_members', (req, res) => {
-    const db = readDB();
-
-    const newMember = {
-        id: Date.now(),
-        ...req.body
-    };
-
-    db.project_members.push(newMember);
-    writeDB(db);
-
-    res.json(newMember);
-});
-
-app.delete('/api/project_members/:id', (req, res) => {
-    const db = readDB();
-
-    db.project_members = db.project_members.filter(m => m.id != req.params.id);
-    writeDB(db);
-
-    res.json({ success: true });
-});
-
-// ============================
-// FRONTEND
-// ============================
-
+// Все остальные запросы — отдаём главную страницу сайта
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ============================
-// START
-// ============================
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 СтройCRM запущен на порту ${PORT}`);
-    console.log(`📁 DB файл: ${DB_FILE}`);
+app.listen(PORT, () => {
+  console.log(`Сервер СтройCRM запущен на порту ${PORT}`);
 });
