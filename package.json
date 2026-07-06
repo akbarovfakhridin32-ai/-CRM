@@ -1,18 +1,12 @@
 {
-  "name": "stroycrm-backend",
+  "name": "stroicrm",
   "version": "1.0.0",
-  "description": "Бэкенд для СтройCRM с GigaChat",
+  "description": "CRM for construction",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "dotenv": "^16.4.5",
-    "cors": "^2.8.5",
-    "axios": "^1.7.2"
-  },
-  "engines": {
-    "node": "16.x"
+    "express": "^4.18.2"
   }
 }
