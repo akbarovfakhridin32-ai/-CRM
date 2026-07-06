@@ -1,11 +1,15 @@
 {
-  "name": "stroycrm",
+  "name": "stroycrm-server",
   "version": "1.0.0",
+  "description": "СтройCRM с ИИ-помощником на GigaChat",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
+}
