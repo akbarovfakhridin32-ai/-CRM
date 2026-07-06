@@ -1,14 +1,23 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const app = express();
-const PORT = 3000;
 
-app.use(express.json());
-app.use(express.static(__dirname));
+const app = express();
+
+// ✅ ВАЖНО: правильный порт для облака
+const PORT = process.env.PORT || 3000;
 
 // ============================================================
-// ПРОСТАЯ БАЗА ДАННЫХ В ФАЙЛЕ (БЕЗ POSTGRESQL)
+// НАСТРОЙКИ
+// ============================================================
+
+app.use(express.json());
+
+// ✅ правильно раздаём папку public
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ============================================================
+// БАЗА ДАННЫХ В ФАЙЛЕ
 // ============================================================
 
 const DB_FILE = './db.json';
@@ -24,7 +33,7 @@ if (!fs.existsSync(DB_FILE)) {
         project_members: [],
         reports: [],
         messages: []
-    }));
+    }, null, 2));
 }
 
 function readDB() {
@@ -36,21 +45,32 @@ function writeDB(data) {
 }
 
 // ============================================================
-// АВТОРИЗАЦИЯ
+// LOGIN
 // ============================================================
 
 app.post('/login', (req, res) => {
     const { login, password } = req.body;
     const db = readDB();
+
     const user = db.users.find(u => u.login === login && u.password === password);
+
     if (!user) {
         return res.status(401).json({ success: false, error: 'Неверный логин или пароль' });
     }
-    res.json({ success: true, user: { id: user.id, login: user.login, name: user.full_name, role: user.role } });
+
+    res.json({
+        success: true,
+        user: {
+            id: user.id,
+            login: user.login,
+            name: user.full_name,
+            role: user.role
+        }
+    });
 });
 
 // ============================================================
-// API ДЛЯ ОБЪЕКТОВ (PROJECTS)
+// API
 // ============================================================
 
 app.get('/api/projects', (req, res) => {
@@ -69,9 +89,12 @@ app.post('/api/projects', (req, res) => {
 app.put('/api/projects/:id', (req, res) => {
     const db = readDB();
     const index = db.projects.findIndex(p => p.id == req.params.id);
+
     if (index === -1) return res.status(404).json({ error: 'Не найдено' });
+
     db.projects[index] = { ...db.projects[index], ...req.body };
     writeDB(db);
+
     res.json(db.projects[index]);
 });
 
@@ -83,7 +106,7 @@ app.delete('/api/projects/:id', (req, res) => {
 });
 
 // ============================================================
-// API ДЛЯ СОТРУДНИКОВ (USERS)
+// USERS
 // ============================================================
 
 app.get('/api/users', (req, res) => {
@@ -99,24 +122,8 @@ app.post('/api/users', (req, res) => {
     res.json(newUser);
 });
 
-app.put('/api/users/:id', (req, res) => {
-    const db = readDB();
-    const index = db.users.findIndex(u => u.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-    db.users[index] = { ...db.users[index], ...req.body };
-    writeDB(db);
-    res.json(db.users[index]);
-});
-
-app.delete('/api/users/:id', (req, res) => {
-    const db = readDB();
-    db.users = db.users.filter(u => u.id != req.params.id);
-    writeDB(db);
-    res.json({ success: true });
-});
-
 // ============================================================
-// API ДЛЯ ЗАДАЧ (TASKS)
+// TASKS
 // ============================================================
 
 app.get('/api/tasks', (req, res) => {
@@ -132,24 +139,8 @@ app.post('/api/tasks', (req, res) => {
     res.json(newTask);
 });
 
-app.put('/api/tasks/:id', (req, res) => {
-    const db = readDB();
-    const index = db.tasks.findIndex(t => t.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-    db.tasks[index] = { ...db.tasks[index], ...req.body };
-    writeDB(db);
-    res.json(db.tasks[index]);
-});
-
-app.delete('/api/tasks/:id', (req, res) => {
-    const db = readDB();
-    db.tasks = db.tasks.filter(t => t.id != req.params.id);
-    writeDB(db);
-    res.json({ success: true });
-});
-
 // ============================================================
-// API ДЛЯ ОТЧЁТОВ (REPORTS)
+// REPORTS
 // ============================================================
 
 app.get('/api/reports', (req, res) => {
@@ -165,24 +156,8 @@ app.post('/api/reports', (req, res) => {
     res.json(newReport);
 });
 
-app.put('/api/reports/:id', (req, res) => {
-    const db = readDB();
-    const index = db.reports.findIndex(r => r.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-    db.reports[index] = { ...db.reports[index], ...req.body };
-    writeDB(db);
-    res.json(db.reports[index]);
-});
-
-app.delete('/api/reports/:id', (req, res) => {
-    const db = readDB();
-    db.reports = db.reports.filter(r => r.id != req.params.id);
-    writeDB(db);
-    res.json({ success: true });
-});
-
 // ============================================================
-// API ДЛЯ СООБЩЕНИЙ (MESSAGES)
+// MESSAGES
 // ============================================================
 
 app.get('/api/messages', (req, res) => {
@@ -198,24 +173,8 @@ app.post('/api/messages', (req, res) => {
     res.json(newMessage);
 });
 
-app.put('/api/messages/:id', (req, res) => {
-    const db = readDB();
-    const index = db.messages.findIndex(m => m.id == req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Не найдено' });
-    db.messages[index] = { ...db.messages[index], ...req.body };
-    writeDB(db);
-    res.json(db.messages[index]);
-});
-
-app.delete('/api/messages/:id', (req, res) => {
-    const db = readDB();
-    db.messages = db.messages.filter(m => m.id != req.params.id);
-    writeDB(db);
-    res.json({ success: true });
-});
-
 // ============================================================
-// API ДЛЯ УЧАСТНИКОВ ПРОЕКТОВ (PROJECT_MEMBERS)
+// PROJECT MEMBERS
 // ============================================================
 
 app.get('/api/project_members', (req, res) => {
@@ -231,22 +190,19 @@ app.post('/api/project_members', (req, res) => {
     res.json(newMember);
 });
 
-app.delete('/api/project_members/:id', (req, res) => {
-    const db = readDB();
-    db.project_members = db.project_members.filter(m => m.id != req.params.id);
-    writeDB(db);
-    res.json({ success: true });
-});
-
 // ============================================================
-// ЗАПУСК СЕРВЕРА
+// FRONTEND
 // ============================================================
 
 app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ============================================================
+// START SERVER
+// ============================================================
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 СтройCRM сервер запущен на порту ${PORT}`);
-    console.log(`📁 Данные хранятся в файле ${DB_FILE}`);
+    console.log(`🚀 Server запущен на порту ${PORT}`);
+    console.log(`📁 DB файл: ${DB_FILE}`);
 });
