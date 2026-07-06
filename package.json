@@ -1,5 +1,12 @@
 {
-  "name": "stroicrm",
+  "name": "stroycrm-server",
   "version": "1.0.0",
-  "description": "CRM for construction",
-  "main": 
+  "description": "СтройCRM с ИИ-помощником",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+} 
